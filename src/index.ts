@@ -16,7 +16,7 @@ export { PrivacyRouter } from './router.js';
 export { AuditLog, createAuditLog } from './audit/index.js';
 export type { AuditLogOptions } from './audit/index.js';
 export { PrivacyMetrics, createMetrics } from './metrics/index.js';
-export type { MetricsSnapshot } from './metrics/index.js';
+export type { MetricsSnapshot, MetricsOptions } from './metrics/index.js';
 
 // Rule layer
 export { defaultRules, findRule, matchRule, normalize, tokenize } from './rules/index.js';

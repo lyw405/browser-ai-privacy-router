@@ -17,6 +17,18 @@ export interface MetricsSnapshot {
   p95LatencyMs: number;
 }
 
+export interface MetricsOptions {
+  /**
+   * Max latency samples retained for the latency window (D2 guard). Older
+   * samples are overwritten round-robin so memory stays bounded on long-lived
+   * pages. Default 1000.
+   */
+  latencySamples?: number;
+}
+
+/** Default size of the bounded latency window. */
+const DEFAULT_LATENCY_SAMPLES = 1000;
+
 /**
  * Lightweight, dependency-free observability collector.
  *
@@ -30,7 +42,9 @@ export class PrivacyMetrics {
   private blockedFields = 0;
   private degraded = 0;
   private inferenceUsed = 0;
+  private readonly maxLatencySamples: number;
   private latencies: number[] = [];
+  private latencyCursor = 0;
   private byDecision: Record<RouteDecision, number> = {
     local: 0,
     cloud: 0,
@@ -39,6 +53,10 @@ export class PrivacyMetrics {
     fallback: 0,
   };
 
+  constructor(options: MetricsOptions = {}) {
+    this.maxLatencySamples = Math.max(1, Math.floor(options.latencySamples ?? DEFAULT_LATENCY_SAMPLES));
+  }
+
   observe(result: RouteResult, latencyMs = 0): void {
     this.total++;
     this.byDecision[result.routeDecision]++;
@@ -46,7 +64,17 @@ export class PrivacyMetrics {
     this.blockedFields += result.blockedFields.length;
     if (result.auditEvent.degraded) this.degraded++;
     if (result.auditEvent.inferenceUsed) this.inferenceUsed++;
-    this.latencies.push(latencyMs);
+    this.recordLatency(latencyMs);
+  }
+
+  /** Append to a bounded ring buffer so long-lived pages never grow unbounded (D2). */
+  private recordLatency(latencyMs: number): void {
+    if (this.latencies.length < this.maxLatencySamples) {
+      this.latencies.push(latencyMs);
+    } else {
+      this.latencies[this.latencyCursor] = latencyMs;
+      this.latencyCursor = (this.latencyCursor + 1) % this.maxLatencySamples;
+    }
   }
 
   /** Time a routing call and observe it automatically. */
@@ -83,10 +111,11 @@ export class PrivacyMetrics {
     this.degraded = 0;
     this.inferenceUsed = 0;
     this.latencies = [];
+    this.latencyCursor = 0;
     this.byDecision = { local: 0, cloud: 0, 'masked-cloud': 0, blocked: 0, fallback: 0 };
   }
 }
 
-export function createMetrics(): PrivacyMetrics {
-  return new PrivacyMetrics();
+export function createMetrics(options: MetricsOptions = {}): PrivacyMetrics {
+  return new PrivacyMetrics(options);
 }

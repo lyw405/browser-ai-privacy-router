@@ -6,3 +6,6 @@ coverage/
 .idea/
 .vscode/
 *.tsbuildinfo
+
+# Local-only planning doc, not part of the published package
+ROADMAP.md

@@ -55,6 +55,8 @@ interface Context {
   sawForbidden: boolean;
   inferenceUsed: boolean;
   degraded: boolean;
+  /** Objects on the current traversal path, used to break circular references (D1). */
+  visited: WeakSet<object>;
 }
 
 function buildContext(config: PrivacyRouterConfig, extraRules?: PrivacyRule[]): Context {
@@ -79,6 +81,7 @@ function buildContext(config: PrivacyRouterConfig, extraRules?: PrivacyRule[]): 
     sawForbidden: false,
     inferenceUsed: false,
     degraded: false,
+    visited: new WeakSet<object>(),
   };
 }
 
@@ -207,15 +210,42 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
+/**
+ * `JSON.stringify` that never throws on circular structures. Cycles are
+ * replaced with a `[Circular]` marker so the depth-limit scan (D1) stays safe.
+ */
+function safeStringify(value: unknown): string {
+  const seen = new WeakSet<object>();
+  try {
+    return (
+      JSON.stringify(value, (_key, val) => {
+        if (typeof val === 'object' && val !== null) {
+          if (seen.has(val)) return '[Circular]';
+          seen.add(val);
+        }
+        return val;
+      }) ?? ''
+    );
+  } catch {
+    return String(value);
+  }
+}
+
 /** Serialize-and-scan a subtree we refused to traverse (depth limit). */
 function opaqueLeaf(field: string, path: string, value: unknown, ctx: Context): Processed {
-  const str = JSON.stringify(value) ?? '';
+  const str = safeStringify(value);
   const plan = buildPlan(field, str, ctx);
   if (plan.action === 'allow' && plan.level === 'public') return { keep: true, value };
   if (plan.action === 'block') return applyPlan(field, path, str, { ...plan, action: 'block' }, ctx);
   const masked = maskLeaf(str, { ...plan, action: 'mask' });
   ctx.maskedFields.push({ path, field: field || path, level: plan.level, action: 'mask', detector: plan.detector, reason: plan.reason });
   return { keep: true, value: masked };
+}
+
+/** Drop a node that reappears on its own ancestor path (circular reference, D1). */
+function dropCircular(path: string, ctx: Context): Processed {
+  ctx.reasons.push(`circular-reference dropped at ${path || '<root>'}`);
+  return { keep: false };
 }
 
 function processNodeSync(value: unknown, field: string, path: string, depth: number, ctx: Context): Processed {
@@ -232,20 +262,26 @@ function processNodeSync(value: unknown, field: string, path: string, depth: num
   if (depth > ctx.maxDepth) return opaqueLeaf(field, path, value, ctx);
 
   if (Array.isArray(value)) {
+    if (ctx.visited.has(value)) return dropCircular(path, ctx);
+    ctx.visited.add(value);
     const out: unknown[] = [];
     value.forEach((item, i) => {
       const res = processNodeSync(item, '', `${path}[${i}]`, depth + 1, ctx);
       out.push(res.keep ? res.value : null);
     });
+    ctx.visited.delete(value);
     return { keep: true, value: out };
   }
   if (isPlainObject(value)) {
+    if (ctx.visited.has(value)) return dropCircular(path, ctx);
+    ctx.visited.add(value);
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {
       const childPath = path ? `${path}.${k}` : k;
       const res = processNodeSync(v, k, childPath, depth + 1, ctx);
       if (res.keep) out[k] = res.value;
     }
+    ctx.visited.delete(value);
     return { keep: true, value: out };
   }
   return { keep: true, value };
@@ -274,20 +310,26 @@ async function processNodeAsync(value: unknown, field: string, path: string, dep
   if (depth > ctx.maxDepth) return opaqueLeaf(field, path, value, ctx);
 
   if (Array.isArray(value)) {
+    if (ctx.visited.has(value)) return dropCircular(path, ctx);
+    ctx.visited.add(value);
     const out: unknown[] = [];
     for (let i = 0; i < value.length; i++) {
       const res = await processNodeAsync(value[i], '', `${path}[${i}]`, depth + 1, ctx, timeoutMs, provider);
       out.push(res.keep ? res.value : null);
     }
+    ctx.visited.delete(value);
     return { keep: true, value: out };
   }
   if (isPlainObject(value)) {
+    if (ctx.visited.has(value)) return dropCircular(path, ctx);
+    ctx.visited.add(value);
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {
       const childPath = path ? `${path}.${k}` : k;
       const res = await processNodeAsync(v, k, childPath, depth + 1, ctx, timeoutMs, provider);
       if (res.keep) out[k] = res.value;
     }
+    ctx.visited.delete(value);
     return { keep: true, value: out };
   }
   return { keep: true, value };

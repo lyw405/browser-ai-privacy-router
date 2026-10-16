@@ -122,3 +122,43 @@ describe('PrivacyRouter.route (async) parity', () => {
     expect(res.routeDecision).toBe('masked-cloud');
   });
 });
+
+describe('PrivacyRouter — circular references (D1)', () => {
+  it('does not throw on a self-referencing object in routeSync', () => {
+    const router = createPrivacyRouter(clock);
+    const payload: any = { user: { phone: '13800138000' } };
+    payload.self = payload;
+    payload.user.parent = payload;
+    expect(() => router.routeSync(payload)).not.toThrow();
+    const res = router.routeSync(payload);
+    expect((res.safePayload as any).user.phone).toBe('138****8000');
+    expect((res.safePayload as any).self).toBeUndefined();
+    expect(res.reason).toContain('circular-reference');
+  });
+
+  it('does not throw on a cyclic array in routeSync', () => {
+    const router = createPrivacyRouter(clock);
+    const arr: any[] = ['13800138000'];
+    arr.push(arr);
+    expect(() => router.routeSync({ list: arr })).not.toThrow();
+    const res = router.routeSync({ list: arr });
+    expect((res.safePayload as any).list[0]).toBe('138****8000');
+    expect((res.safePayload as any).list[1]).toBeNull();
+  });
+
+  it('does not throw on a cycle deeper than maxDepth (opaque scan)', () => {
+    const router = createPrivacyRouter({ ...clock, maxDepth: 1 });
+    const deep: any = { note: '13800138000' };
+    deep.loop = deep;
+    expect(() => router.routeSync({ a: { b: deep } })).not.toThrow();
+  });
+
+  it('does not throw on a self-referencing object in route (async)', async () => {
+    const router = createPrivacyRouter(clock);
+    const payload: any = { user: { phone: '13800138000' } };
+    payload.self = payload;
+    const res = await router.route(payload);
+    expect((res.safePayload as any).user.phone).toBe('138****8000');
+    expect((res.safePayload as any).self).toBeUndefined();
+  });
+});

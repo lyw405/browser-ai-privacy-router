@@ -63,4 +63,26 @@ describe('PrivacyMetrics', () => {
     metrics.reset();
     expect(metrics.snapshot().total).toBe(0);
   });
+
+  it('bounds the latency window (D2) while still counting every observation', () => {
+    const metrics = createMetrics({ latencySamples: 3 });
+    const router = createPrivacyRouter(clock);
+    const res = router.routeSync({ hello: 'world' });
+    for (let i = 1; i <= 10; i++) metrics.observe(res, i);
+    const snap = metrics.snapshot();
+    expect(snap.total).toBe(10); // total counts all observations
+    // ring buffer retains only the last 3 samples: [10, 8, 9]
+    expect(snap.avgLatencyMs).toBeCloseTo(9);
+  });
+
+  it('never grows the latency buffer past the configured window under load', () => {
+    const metrics = createMetrics({ latencySamples: 5 });
+    const router = createPrivacyRouter(clock);
+    const res = router.routeSync({ hello: 'world' });
+    for (let i = 0; i < 50_000; i++) metrics.observe(res, i % 7);
+    const snap = metrics.snapshot();
+    expect(snap.total).toBe(50_000);
+    expect(Number.isFinite(snap.p95LatencyMs)).toBe(true);
+    expect(snap.p95LatencyMs).toBeLessThanOrEqual(6);
+  });
 });
